@@ -1,0 +1,130 @@
+# LiteLLM gateway configuration (all provider/model details live ONLY in this file).
+# Model IDs were checked against provider docs/APIs on 2026-10-05. Free tiers change,
+# so if a model disappears, edit the line here - no Python change is needed.
+#
+# Vocabulary:
+#   model_name   = the NAME the backend asks for (a "logical model group" or deployment)
+#   litellm_params.model = "<provider>/<provider's model id>" (the real deployment)
+#   model_info.id = label "<route>-<provider>" of the deployment. The backend reads it from
+#                   the x-litellm-model-id response header to learn who answered, and uses
+#                   it as the route/provider labels in logs and metrics.
+
+model_list:
+  # ---------- Logical model groups (primary deployment of each group) ----------
+  - model_name: coding-model
+    litellm_params:
+      model: openrouter/cohere/north-mini-code:free   # ":free" = never billed
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: {id: coding-openrouter}
+
+  - model_name: research-model
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info: {id: research-gemini}
+
+  - model_name: general-model
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+    model_info: {id: general-groq}
+
+  - model_name: reasoning-model
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: {id: reasoning-openrouter}
+
+  # ---------- Fallback deployments (one per provider, shared by all groups) ----------
+  - model_name: fallback-groq
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+    model_info: {id: fallback-groq}
+
+  - model_name: fallback-gemini
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+    model_info: {id: fallback-gemini}
+
+  - model_name: fallback-openrouter
+    litellm_params:
+      model: openrouter/qwen/qwen3.8-27b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+    model_info: {id: fallback-openrouter}
+
+  # ---------- Automatic routing ----------
+  # LiteLLM's built-in "complexity router" scores each prompt with fast heuristics
+  # (code present? reasoning words? length? technical terms?) - no ML model, no extra
+  # API call - and picks a tier. We map each tier to one logical model group.
+  # This is a heuristic, so it is "good enough", not perfect.
+  - model_name: smart-router
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        # Default thresholds (0.15/0.35/0.60) sent almost every prompt to SIMPLE or MEDIUM in my
+        # tests, so they are lowered to spread prompts over all four tiers. Tune them if needed.
+        tier_boundaries: {simple_medium: 0.08, medium_complex: 0.16, complex_reasoning: 0.26}
+        tiers:
+          SIMPLE: general-model      # short, easy questions
+          MEDIUM: research-model     # explanations / knowledge questions
+          COMPLEX: coding-model      # code and technical, multi-part tasks
+          REASONING: reasoning-model # step-by-step / analysis style prompts
+      complexity_router_default_model: general-model
+
+router_settings:
+  num_retries: 1            # retry the SAME deployment once for retryable errors (429, 5xx, timeouts)
+  timeout: 30               # seconds before a request counts as a timeout
+  allowed_fails: 1          # after 1 failure in a minute ...
+  cooldown_time: 30         # ... take that deployment out of rotation for 30s (cooldown)
+  # After retries are used up, try these deployments in order.
+  # If every one fails the caller gets an error (the backend turns it into a friendly message).
+  fallbacks:
+    - coding-model: [fallback-groq, fallback-gemini]
+    - research-model: [fallback-openrouter, fallback-groq]
+    - general-model: [fallback-gemini, fallback-openrouter]
+    - reasoning-model: [fallback-gemini, fallback-groq]
+
+litellm_settings:
+  # LangSmith = LLM observability (prompt, response, latency, model, errors, tokens).
+  # Needs LANGSMITH_API_KEY and LANGSMITH_PROJECT env vars; see README.
+  success_callback: ["langsmith"]
+  failure_callback: ["langsmith"]
+  # LiteLLM's own Prometheus metrics (per-deployment failures, cooldowns) at /metrics.
+  # We use these instead of re-implementing provider-failure counting in Python.
+  callbacks: ["prometheus"]
+  require_auth_for_metrics_endpoint: false   # lets Prometheus scrape without the master key
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY   # backend authenticates to the gateway with this
+
+# Guardrail = a safety check that runs on every prompt BEFORE any provider is called.
+# LiteLLM's built-in content filter: no extra service, no custom code. A blocked prompt
+# returns HTTP 400, never reaches a provider and never triggers retries/fallbacks.
+guardrails:
+  - guardrail_name: input-guardrail
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: pre_call
+      default_on: true
+      patterns:
+        # MASK = replace with a placeholder and continue (so the provider never sees it)
+        - {pattern_type: prebuilt, pattern_name: email, action: MASK}
+        - {pattern_type: prebuilt, pattern_name: us_phone, action: MASK}
+        # BLOCK = reject the request
+        - {pattern_type: prebuilt, pattern_name: us_ssn, action: BLOCK}
+        - {pattern_type: prebuilt, pattern_name: visa, action: BLOCK}
+        - {pattern_type: prebuilt, pattern_name: mastercard, action: BLOCK}
+        - {pattern_type: prebuilt, pattern_name: amex, action: BLOCK}
+        - {pattern_type: prebuilt, pattern_name: aws_access_key, action: BLOCK}
+        - {pattern_type: prebuilt, pattern_name: github_token, action: BLOCK}
+      # Thresholds: at "medium" the filter blocked harmless prompts such as "kill a stuck process"
+      # or "bomb calorimeter", so violence/weapons use "high". Keyword-based = not perfect.
+      categories:
+        - {category: prompt_injection_jailbreak, enabled: true, action: BLOCK, severity_threshold: medium}
+        - {category: prompt_injection_system_prompt, enabled: true, action: BLOCK, severity_threshold: medium}
+        - {category: harmful_self_harm, enabled: true, action: BLOCK, severity_threshold: medium}
+        - {category: harmful_violence, enabled: true, action: BLOCK, severity_threshold: high}
+        - {category: harmful_illegal_weapons, enabled: true, action: BLOCK, severity_threshold: high}
+        - {category: harmful_child_safety, enabled: true, action: BLOCK, severity_threshold: low}
