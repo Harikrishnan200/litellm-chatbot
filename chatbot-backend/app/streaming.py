@@ -20,7 +20,8 @@ from collections.abc import AsyncIterator
 
 from app import config, metrics
 from app.cache import get_cached, save_cached
-from app.chat import continuation_messages, first_message, guardrail_reason, open_stream
+from app.chat import continuation_messages, conversation_messages, guardrail_reason, open_stream
+from app.memory import save_turn
 
 log = logging.getLogger("smartroute")
 
@@ -39,8 +40,10 @@ def read_usage(chunk, usage: dict) -> None:
         usage["cost"] = (getattr(chunk.usage, "model_extra", None) or {}).get("cost", 0) or 0
 
 
-async def continue_after_failure(message: str, partial_text: str, request_id: str,
-                                 recovery_info: dict, usage: dict) -> AsyncIterator[str]:
+async def continue_after_failure(
+    history: list[dict], message: str, partial_text: str, request_id: str,
+    recovery_info: dict, usage: dict,
+) -> AsyncIterator[str]:
     """Recovery: ask the recovery model to finish an answer that was cut off.
 
     Receives the user's question and the text already streamed ("" if nothing arrived).
@@ -48,9 +51,9 @@ async def continue_after_failure(message: str, partial_text: str, request_id: st
     Fills `recovery_info` with who answered (for the UI) and `usage` with token counts.
     """
     if partial_text:
-        messages = continuation_messages(message, partial_text)
+        messages = continuation_messages(history, message, partial_text)
     else:
-        messages = first_message(message)
+        messages = conversation_messages(history, message)
     info, stream = await open_stream(config.RECOVERY_MODEL, messages, request_id)
     recovery_info.update(info)
     async for chunk in stream:
@@ -68,11 +71,13 @@ def record_metrics(info: dict, usage: dict, status: str, latency: float) -> None
     metrics.estimated_cost_usd_total.inc(usage["cost"])
 
 
-async def stream_chat(message: str, request_id: str) -> AsyncIterator[str]:
+async def stream_chat(
+    message: str, history: list[dict], session_id: str | None, request_id: str,
+) -> AsyncIterator[str]:
     """Main generator behind POST /chat: cache -> LiteLLM stream -> (recovery) -> cache."""
     start = time.time()
 
-    cached = await get_cached(message)
+    cached = await get_cached(message, history)
     if cached:
         metrics.cache_hits_total.inc()
         metrics.requests_total.labels(cached["route"], cached["provider"], "cache_hit").inc()
@@ -80,6 +85,7 @@ async def stream_chat(message: str, request_id: str) -> AsyncIterator[str]:
                  request_id, cached["route"], cached["provider"], time.time() - start)
         yield sse({"type": "meta", **cached["info"], "retries": 0, "fallbacks": 0, "attempts": 0})
         yield sse({"type": "token", "text": cached["text"]})
+        await save_turn(session_id, message, cached["text"])
         yield sse({"type": "done", "request_id": request_id, "cached": True, "recovered": False,
                    "latency": round(time.time() - start, 2),
                    "prompt_tokens": 0, "completion_tokens": 0, "cost": 0})  # a cache hit uses nothing
@@ -95,7 +101,9 @@ async def stream_chat(message: str, request_id: str) -> AsyncIterator[str]:
     recovered_by = None
     try:
         try:
-            info, stream = await open_stream(config.ROUTER_MODEL, first_message(message), request_id)
+            info, stream = await open_stream(
+                config.ROUTER_MODEL, conversation_messages(history, message), request_id,
+            )
             if info["retries"]:
                 metrics.retry_total.labels(info["route"]).inc(info["retries"])
             if info["fallbacks"]:
@@ -118,7 +126,7 @@ async def stream_chat(message: str, request_id: str) -> AsyncIterator[str]:
                         request_id, info["route"], info["provider"], type(error).__name__, len(text),
                         config.RECOVERY_MODEL)
             recovery_info: dict = {}
-            async for piece in continue_after_failure(message, text, request_id, recovery_info, usage):
+            async for piece in continue_after_failure(history, message, text, request_id, recovery_info, usage):
                 text += piece
                 yield sse({"type": "token", "text": piece})
             recovered_by = f'{recovery_info["provider"]}/{recovery_info["model"]}'
@@ -147,6 +155,7 @@ async def stream_chat(message: str, request_id: str) -> AsyncIterator[str]:
              usage["prompt_tokens"] + usage["completion_tokens"])
     if text and not recovered_by:  # a stitched-together answer is not cached
         await save_cached(message, {"text": text, "route": info["route"], "provider": info["provider"],
-                                    "info": info, "usage": usage})
+                                    "info": info, "usage": usage}, history)
+    await save_turn(session_id, message, text)
     yield sse({"type": "done", "request_id": request_id, "cached": False, "recovered": bool(recovered_by),
                "recovered_by": recovered_by, "latency": round(latency, 2), **usage})

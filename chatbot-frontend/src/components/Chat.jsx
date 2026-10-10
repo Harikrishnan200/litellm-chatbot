@@ -11,7 +11,7 @@ const EXAMPLES = [
   "Compare REST and gRPC, analyze the trade-offs step by step, then recommend one",
 ];
 
-export default function Chat({ messages, setMessages, setSelected }) {
+export default function Chat({ messages, setMessages, setSelected, sessionId, historyLoaded }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bottom = useRef(null);
@@ -27,13 +27,13 @@ export default function Chat({ messages, setMessages, setSelected }) {
 
   async function send(text) {
     text = text.trim();
-    if (!text || busy) return;
+    if (!text || busy || !historyLoaded) return;
     setInput("");
     setBusy(true);
     setMessages((all) => [...all, { role: "user", text }, { role: "assistant", text: "", status: "routing" }]);
 
     try {
-      await streamChat(text, {
+      await streamChat(text, sessionId, {
         onMeta: (meta) => updateLast(() => ({ meta, status: "thinking" })),
         onToken: (t) => updateLast((m) => ({ text: m.text + t, status: "streaming" })),
         onDone: (stats) => updateLast(() => ({ stats, status: "done" })),
@@ -51,7 +51,8 @@ export default function Chat({ messages, setMessages, setSelected }) {
   return (
     <section className="chat">
       <div className="messages">
-        {messages.length === 0 && (
+        {!historyLoaded && messages.length === 0 && <div className="empty"><p>Loading conversation…</p></div>}
+        {historyLoaded && messages.length === 0 && (
           <div className="empty">
             <h2>Ask anything</h2>
             <p>Each prompt is scored and routed to a different model. Try one:</p>
@@ -102,8 +103,8 @@ export default function Chat({ messages, setMessages, setSelected }) {
         <div ref={bottom} />
       </div>
       <form onSubmit={(e) => { e.preventDefault(); send(input); }}>
-        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Message SmartRoute…" maxLength={4000} />
-        <button disabled={busy || !input.trim()}>{busy ? "…" : "Send"}</button>
+        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Message SmartRoute…" maxLength={4000} disabled={!historyLoaded} />
+        <button disabled={busy || !historyLoaded || !input.trim()}>{busy ? "…" : "Send"}</button>
       </form>
     </section>
   );

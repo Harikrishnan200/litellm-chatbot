@@ -50,8 +50,8 @@ React + Vite (react-markdown) · FastAPI · LiteLLM proxy (pinned to 1.104.0) ·
 
 1. React `POST /chat` with `X-API-Key` header (`chatbot-frontend/src/api.js`).
 2. FastAPI checks the API key, then the Redis rate limit (`main.py`, `rate_limit.py`).
-3. `streaming.py` looks in the Redis cache. Hit → send the cached text and finish.
-4. Miss → `chat.py` calls LiteLLM asking for the model `smart-router`.
+3. FastAPI loads the recent conversation for the browser session from Redis, then `streaming.py` looks for a cache entry for that exact context. Hit → send the cached text and finish.
+4. Miss → `chat.py` sends the system prompt, saved conversation, and latest message to LiteLLM using the model `smart-router`.
 5. LiteLLM's complexity router picks a logical group; the group's deployment answers (retries/fallbacks happen inside LiteLLM).
 6. Tokens stream back through FastAPI as SSE events to React.
 7. When finished, the full answer is cached, metrics and logs are written, and LangSmith has the trace (recorded by LiteLLM).
@@ -94,7 +94,7 @@ Fixed-window counter in Redis: key `rate:<hash of api key>:<unix time // window>
 
 ## Redis caching
 
-Key `cache:<sha256 of lower-cased, whitespace-collapsed message>`, value JSON `{text, route, provider}`, TTL `CACHE_TTL`. Only completed answers are cached, never stream chunks, and answers that needed mid-stream recovery are not cached. Same question → same answer for the TTL, regardless of conversation context (the app is single-turn).
+Key `cache:<sha256 of normalized message and prior conversation>`, value JSON `{text, route, provider}`, TTL `CACHE_TTL`. Only completed answers are cached, never stream chunks, and answers that needed mid-stream recovery are not cached. Including the preceding conversation prevents reuse of an answer produced for a different context.
 
 ## Request inspector (UI)
 
@@ -173,7 +173,7 @@ Without Docker: run Redis, then `litellm --config litellm/config.yaml` (needs `p
 
 ## Environment variables
 
-See `.env.example`. Key ones: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `API_KEY` (clients send it as `X-API-Key`), `LITELLM_MASTER_KEY`, `REDIS_URL`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `CACHE_ENABLED`, `CACHE_TTL`, `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW`. `.env` is git-ignored. The frontend's `VITE_API_KEY` ends up in the browser bundle, which is acceptable for a local demo only.
+See `.env.example`. Key ones: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `API_KEY` (clients send it as `X-API-Key`), `LITELLM_MASTER_KEY`, `REDIS_URL`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `CACHE_ENABLED`, `CACHE_TTL`, `MEMORY_ENABLED`, `MEMORY_TTL`, `MEMORY_MAX_TURNS`, `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW`. `.env` is git-ignored. The frontend's `VITE_API_KEY` ends up in the browser bundle, which is acceptable for a local demo only.
 
 ## Testing
 
@@ -212,7 +212,7 @@ curl http://localhost:8000/metrics | grep llm_
 
 - Free-tier models and limits change; check `litellm/config.yaml` if a model stops working (Gemini sometimes answers 503 "high demand"; that is exactly what the fallbacks are for).
 - Routing is a heuristic.
-- Single-turn chat only; no conversation history.
+- Redis-backed conversation memory keeps the most recent 12 completed turns per browser session for 24 hours by default. Tune `MEMORY_MAX_TURNS` and `MEMORY_TTL` in `.env`.
 - One shared API key; the rate limit is per key, not per end user.
 - Mid-stream recovery is best-effort; tested with a simulated failure plus a live continuation call.
 - The frontend embeds the API key (demo only). No TLS, no secrets manager.
@@ -220,4 +220,4 @@ curl http://localhost:8000/metrics | grep llm_
 
 ## Future improvements
 
-Conversation history, per-user keys and limits, semantic caching, a second recovery attempt, alerting rules in Prometheus, tracing the cache/rate-limit steps in LangSmith, HTTPS and a real auth flow.
+Per-user keys and limits, semantic caching, a second recovery attempt, alerting rules in Prometheus, tracing the cache/rate-limit steps in LangSmith, HTTPS and a real auth flow.

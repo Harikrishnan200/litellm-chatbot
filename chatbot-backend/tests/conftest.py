@@ -6,7 +6,7 @@ import fakeredis.aioredis
 import httpx
 import pytest
 
-from app import cache, config, rate_limit
+from app import cache, config, memory, rate_limit
 from app.main import app
 
 HEADERS = {"X-API-Key": "test-key"}
@@ -17,6 +17,7 @@ def fake_env(monkeypatch):
     """Every test gets an empty in-memory Redis and known settings. No real network."""
     fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     monkeypatch.setattr(cache, "redis_client", fake_redis)
+    monkeypatch.setattr(memory, "redis_client", fake_redis)
     monkeypatch.setattr(rate_limit, "redis_client", fake_redis)
     monkeypatch.setattr(config, "API_KEY", "test-key")
     monkeypatch.setattr(config, "CACHE_ENABLED", True)

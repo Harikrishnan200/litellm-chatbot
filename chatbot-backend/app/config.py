@@ -30,6 +30,12 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CACHE_ENABLED = _bool("CACHE_ENABLED", "true")
 CACHE_TTL = int(os.getenv("CACHE_TTL", "300"))  # seconds
 
+# Conversation memory lives in Redis.  We retain a small, recent window so a
+# long-running browser session does not eventually exceed the model context.
+MEMORY_ENABLED = _bool("MEMORY_ENABLED", "true")
+MEMORY_TTL = int(os.getenv("MEMORY_TTL", "86400"))  # 24 hours
+MEMORY_MAX_TURNS = int(os.getenv("MEMORY_MAX_TURNS", "12"))
+
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "10"))
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # seconds
 

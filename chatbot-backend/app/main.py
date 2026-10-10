@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app import config, metrics
+from app.memory import get_history
 from app.models import ChatRequest
 from app.rate_limit import is_rate_limited
 from app.streaming import stream_chat
@@ -51,6 +52,14 @@ async def prometheus_metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+@app.get("/chat/history")
+async def chat_history(session_id: str, api_key: str = Depends(require_api_key)) -> dict:
+    """Return the saved messages so a browser reload can restore its conversation."""
+    if not 1 <= len(session_id) <= 128:
+        raise HTTPException(status_code=422, detail="Invalid session ID")
+    return {"messages": await get_history(session_id)}
+
+
 @app.post("/chat")
 async def chat(body: ChatRequest, api_key: str = Depends(require_api_key)) -> StreamingResponse:
     """Streams the answer back as Server-Sent Events (see streaming.py)."""
@@ -59,8 +68,9 @@ async def chat(body: ChatRequest, api_key: str = Depends(require_api_key)) -> St
         metrics.rate_limit_total.inc()
         log.warning("request_id=%s status=rate_limited", request_id)
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait a moment and try again.")
+    history = await get_history(body.session_id)
     return StreamingResponse(
-        stream_chat(body.message, request_id),
+        stream_chat(body.message, history, body.session_id, request_id),
         media_type="text/event-stream",
         headers={"X-Request-ID": request_id, "Cache-Control": "no-cache"},
     )

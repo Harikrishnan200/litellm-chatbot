@@ -8,11 +8,11 @@ const API_KEY = import.meta.env.VITE_API_KEY || "";
 //   onBlocked - the safety guardrail refused the prompt
 //   onError - everything failed
 // We use fetch (not EventSource) because EventSource cannot send POST bodies or headers.
-export async function streamChat(message, { onMeta, onToken, onDone, onBlocked, onError }) {
+export async function streamChat(message, sessionId, { onMeta, onToken, onDone, onBlocked, onError }) {
   const response = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, session_id: sessionId }),
   });
 
   if (!response.ok) {
@@ -43,4 +43,13 @@ export async function streamChat(message, { onMeta, onToken, onDone, onBlocked, 
       else if (event.type === "error") onError(event.message, 200, event);
     }
   }
+}
+
+export async function loadHistory(sessionId) {
+  const response = await fetch(`${API_URL}/chat/history?session_id=${encodeURIComponent(sessionId)}`, {
+    headers: { "X-API-Key": API_KEY },
+  });
+  if (!response.ok) throw new Error("Could not load conversation history");
+  const body = await response.json();
+  return body.messages || [];
 }

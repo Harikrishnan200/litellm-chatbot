@@ -55,11 +55,12 @@ def read_headers(headers) -> dict:
     }
 
 
-def first_message(message: str) -> list[dict]:
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": message}]
+def conversation_messages(history: list[dict], message: str) -> list[dict]:
+    """Build the model input from the system prompt, saved turns, and new turn."""
+    return [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": message}]
 
 
-def continuation_messages(message: str, partial_text: str) -> list[dict]:
+def continuation_messages(history: list[dict], message: str, partial_text: str) -> list[dict]:
     """Messages for mid-stream recovery: original question + the text already sent."""
     instruction = (
         "Your previous answer was cut off. Continue it from exactly where it stopped. "
@@ -67,6 +68,7 @@ def continuation_messages(message: str, partial_text: str) -> list[dict]:
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
+        *history,
         {"role": "user", "content": message},
         {"role": "assistant", "content": partial_text},
         {"role": "user", "content": instruction},
