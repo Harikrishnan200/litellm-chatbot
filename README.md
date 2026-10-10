@@ -124,6 +124,7 @@ docker-compose.yml  Local multi-service environment
 ## Documentation
 
 - [Local development](docs/local-development.md): setup, configuration, testing, and troubleshooting.
+- [Complete project guide](docs/project-guide.md): beginner-friendly explanation of every implemented component and feature.
 - [Beginner guide](docs/beginner-guide.md): plain-language explanation of concepts and source files.
 - [Interview guide](docs/interview-guide.md): implementation decisions and tradeoffs.
 - [Resume bullets](docs/resume-bullets.md): project summary points for a resume.
