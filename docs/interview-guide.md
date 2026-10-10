@@ -3,7 +3,7 @@
 Answers describe what this project actually implements. Where something is not implemented, it says so.
 
 **1. Why did you use LiteLLM?**
-It already provides routing, retries, fallbacks, cooldowns, a unified OpenAI-style API and callbacks (LangSmith, Prometheus). Writing that myself would be reinventing a well-tested piece and adds bugs. My code focuses on app concerns: auth, rate limit, cache, streaming, recovery.
+It already provides routing, retries, fallbacks, cooldowns, a unified OpenAI-style API and callbacks (LangSmith, Prometheus). Writing that myself would be reinventing a well-tested piece and adds bugs. My code focuses on app concerns: auth, rate limit, Redis memory/cache, streaming, and recovery.
 
 **2. Why not call OpenAI/Gemini/Groq directly?**
 Each has a different SDK and error behavior, and a direct call has no failover. With the gateway, the backend has no provider-specific code; changing or adding a model is a YAML edit.
@@ -30,16 +30,16 @@ Timeout is 30 s (`router_settings.timeout`); a timeout is treated as a retryable
 LiteLLM can't restart a stream the user already partly saw, so `continue_after_failure()` (backend/app/streaming.py) keeps the partial text and calls a recovery model with the question + partial answer + "continue without repeating". Limits: best-effort quality, one attempt, fixed recovery model, tested with a simulated failure rather than a real outage.
 
 **10. Why Redis?**
-Shared, fast, with automatic key expiry: perfect for rate-limit counters and cached answers even with multiple backend instances. I use it for only those two things.
+Shared, fast, with automatic key expiry: useful for rate-limit counters, cached answers, and short-term conversation memory even with multiple backend instances.
 
 **11. How does rate limiting work?**
 Fixed window: key `rate:<hash of API key>:<time // window>`, `INCR`, `EXPIRE` on first hit, reject with 429 when over the limit (default 10/60 s). Drawback: bursts up to 2× across a window boundary; a sliding window or token bucket would fix that. Fails open if Redis is down.
 
 **12. Why cache LLM responses?**
-Saves latency, cost and free-tier quota for repeated questions. Cache key = SHA-256 of the normalized message, TTL 300 s, only complete answers.
+Saves latency, cost and free-tier quota for repeated requests. Cache key = SHA-256 of the normalized message and preceding conversation, TTL 300 s, and only complete unrecovered answers are stored.
 
 **13. Risks of caching?**
-Stale answers, repeated "creative" answers, leaking one user's answer to another if prompts include personal context (this app is single-turn with no user data, so the key is just the message), and caching bad answers. I don't cache recovered (stitched) answers. Semantic caching is not implemented.
+Stale answers, repeated "creative" answers, storing chat context in Redis, and caching bad answers. Including previous turns in the key prevents a cached answer crossing into a different conversation context. I don't cache recovered (stitched) answers. Semantic caching is not implemented.
 
 **14. Why LangSmith?**
 Per-request LLM visibility: prompt, response, model/provider, latency, tokens, errors. LiteLLM sends it via a callback so no custom code. Caveat: prompts leave my system, so it's optional (empty key = off).
@@ -69,10 +69,10 @@ LiteLLM exhausts retries and fallbacks, the backend logs the error, increments t
 FastAPI is stateless (state is in Redis), so run multiple replicas behind a load balancer; rate limits already work across replicas. Scale LiteLLM replicas too. I haven't load tested this, so I wouldn't claim numbers.
 
 **23. Limitations?**
-Heuristic routing; single-turn chat; one shared API key; best-effort mid-stream recovery; free-tier limits and model churn; API key embedded in the frontend bundle for the demo; route label for fallback answers is just "fallback".
+Heuristic routing; short-term Redis conversation memory only; one shared API key; best-effort mid-stream recovery; free-tier limits and model churn; API key embedded in the frontend bundle for the demo; route label for fallback answers is just "fallback".
 
 **24. What would you improve for production?**
-Per-user auth and limits, conversation memory, sliding-window limiter, semantic cache, Prometheus alert rules, secrets manager and TLS, proper integration tests against real providers, load testing, a smarter or learned router with evaluation data.
+Per-user auth and limits, persistent conversation storage, sliding-window limiter, semantic cache, Prometheus alert rules, secrets manager and TLS, proper integration tests against real providers, load testing, a smarter or learned router with evaluation data.
 
 **25. Do you have guardrails?**
 Yes, a pre-call input guardrail using LiteLLM's built-in content filter, configured in YAML: it blocks SSNs, card numbers, cloud keys, prompt-injection phrases and harmful categories, and masks emails/phones. Blocked prompts return HTTP 400 before routing, so there is no provider call, retry or fallback; the backend reports them as a `blocked` event and a `llm_guardrail_blocked_total` metric. Limits: keyword/regex based (I had to raise violence/weapons to `high` severity to stop false positives like "kill a process"), prompts only, no output moderation.
